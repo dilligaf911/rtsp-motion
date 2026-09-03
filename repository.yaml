@@ -1,0 +1,4 @@
+# https://developers.home-assistant.io/docs/add-ons/repository#repository-configuration
+name: DilligafRTSP
+url: 'https://github.com/dilligaf911/rtsp-motion/'
+maintainer: Dilligaf

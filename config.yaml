@@ -14,6 +14,7 @@ map:
 options:
   rtsp_url: ""
   webhook_url: ""
+  webhook_verify_ssl: true
   width: 640
   process_fps: 5.0
   min_area: 900
@@ -23,9 +24,11 @@ options:
   warmup: 3.0
   cooldown: 2.0
   reconnect_delay: 3.0
+  stream_timeout: 5.0
 schema:
   rtsp_url: str
   webhook_url: str
+  webhook_verify_ssl: bool
   width: int(0,1920)
   process_fps: float(0.1,30.0)
   min_area: float(1,1000000)
@@ -35,3 +38,4 @@ schema:
   warmup: float(0,300.0)
   cooldown: float(0,300.0)
   reconnect_delay: float(1,300.0)
+  stream_timeout: float(1,60.0)

@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import signal
+import ssl
 import sys
 import time
 import urllib.request
@@ -23,6 +24,7 @@ except ModuleNotFoundError:
 running = True
 WEBHOOK_COOLDOWN = 60.0
 OPTIONS_PATH = "/data/options.json"
+MAX_CONSECUTIVE_READ_ERRORS = 10
 
 
 def stop_handler(_signum: int, _frame: object) -> None:
@@ -35,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("source", nargs="?", help="RTSP URL; omitted when running as a Home Assistant add-on")
     parser.add_argument("--config", default=OPTIONS_PATH, help=argparse.SUPPRESS)
     parser.add_argument("--webhook-url", default="", help=argparse.SUPPRESS)
+    parser.set_defaults(webhook_verify_ssl=True)
     parser.add_argument("--width", type=int, default=640, help="Processing width; 0 keeps source size")
     parser.add_argument("--process-fps", type=float, default=5.0, help="Maximum detection rate")
     parser.add_argument("--min-area", type=float, default=900.0, help="Minimum moving contour area in pixels")
@@ -44,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=float, default=3.0, help="Seconds before reporting events")
     parser.add_argument("--cooldown", type=float, default=2.0, help="Seconds between event messages")
     parser.add_argument("--reconnect-delay", type=float, default=3.0, help="Seconds between reconnect attempts")
+    parser.add_argument("--stream-timeout", type=float, default=5.0, help="RTSP read timeout in seconds")
     parser.add_argument("--display", action="store_true", help="Show a preview; increases resource usage")
     return parser.parse_args()
 
@@ -60,7 +64,8 @@ def load_addon_options(args: argparse.Namespace) -> argparse.Namespace:
 
     args.source = str(options.get("rtsp_url", "")).strip()
     args.webhook_url = str(options.get("webhook_url", "")).strip()
-    for name in ("width", "process_fps", "min_area", "threshold", "history", "var_threshold", "warmup", "cooldown", "reconnect_delay"):
+    args.webhook_verify_ssl = bool(options.get("webhook_verify_ssl", True))
+    for name in ("width", "process_fps", "min_area", "threshold", "history", "var_threshold", "warmup", "cooldown", "reconnect_delay", "stream_timeout"):
         if name in options:
             setattr(args, name, options[name])
     return args
@@ -74,7 +79,7 @@ def open_capture(source: str) -> cv2.VideoCapture:
     return capture
 
 
-def send_webhook(url: str, area: float) -> None:
+def send_webhook(url: str, area: float, verify_ssl: bool) -> None:
     payload = json.dumps({"event": "motion", "timestamp": time.time(), "area": round(area)}).encode()
     request = urllib.request.Request(
         url,
@@ -83,7 +88,8 @@ def send_webhook(url: str, area: float) -> None:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
+        ssl_context = None if verify_ssl else ssl._create_unverified_context()
+        with urllib.request.urlopen(request, timeout=5, context=ssl_context) as response:
             if response.status >= 300:
                 print(f"Webhook returned HTTP {response.status}", file=sys.stderr)
     except Exception as error:
@@ -97,6 +103,8 @@ def detect(source: str, args: argparse.Namespace) -> None:
     last_event = -float("inf")
     last_webhook = -float("inf")
     webhook_url = args.webhook_url
+    if webhook_url and not args.webhook_verify_ssl:
+        print("Webhook SSL certificate verification is disabled", file=sys.stderr)
 
     while running:
         capture = open_capture(source)
@@ -116,6 +124,7 @@ def detect(source: str, args: argparse.Namespace) -> None:
         print("RTSP stream connected", file=sys.stderr)
 
         try:
+            consecutive_read_errors = 0
             while running:
                 # grab() avoids copying a full BGR frame when this iteration is
                 # outside the processing interval and helps keep latency low.
@@ -130,7 +139,12 @@ def detect(source: str, args: argparse.Namespace) -> None:
 
                 ok, frame = capture.retrieve()
                 if not ok or frame is None:
+                    consecutive_read_errors += 1
+                    if consecutive_read_errors >= MAX_CONSECUTIVE_READ_ERRORS:
+                        print("Too many H.264 decode errors; reconnecting...", file=sys.stderr)
+                        break
                     continue
+                consecutive_read_errors = 0
 
                 if args.width > 0 and frame.shape[1] > args.width:
                     scale = args.width / frame.shape[1]
@@ -156,7 +170,7 @@ def detect(source: str, args: argparse.Namespace) -> None:
                     )
                     if webhook_url and now - last_webhook >= WEBHOOK_COOLDOWN:
                         last_webhook = now
-                        send_webhook(webhook_url, moving_area)
+                        send_webhook(webhook_url, moving_area, args.webhook_verify_ssl)
 
                 if args.display:
                     preview = frame.copy()
@@ -188,10 +202,14 @@ def main() -> int:
     if not args.source:
         print("RTSP URL is required", file=sys.stderr)
         return 2
-    if args.process_fps <= 0 or args.width < 0 or not 0 <= args.threshold <= 255:
-        print("Invalid --process-fps, --width, or --threshold value", file=sys.stderr)
+    if args.process_fps <= 0 or args.width < 0 or not 0 <= args.threshold <= 255 or args.stream_timeout <= 0:
+        print("Invalid processing or stream timeout value", file=sys.stderr)
         return 2
 
+    timeout_us = int(args.stream_timeout * 1_000_000)
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+        f"rtsp_transport;tcp|timeout;{timeout_us}|rw_timeout;{timeout_us}|fflags;discardcorrupt"
+    )
     cv2.setNumThreads(1)
     signal.signal(signal.SIGINT, stop_handler)
     signal.signal(signal.SIGTERM, stop_handler)

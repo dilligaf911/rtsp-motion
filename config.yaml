@@ -1,0 +1,37 @@
+name: RTSP Motion Detector
+version: "1.0.0"
+slug: rtsp_motion_detector
+description: Low-resource RTSP motion detector with webhook notifications
+startup: application
+boot: auto
+init: false
+arch:
+  - amd64
+  - aarch64
+  - armv7
+map:
+  - data:rw
+options:
+  rtsp_url: ""
+  webhook_url: ""
+  width: 640
+  process_fps: 5.0
+  min_area: 900
+  threshold: 25
+  history: 300
+  var_threshold: 16.0
+  warmup: 3.0
+  cooldown: 2.0
+  reconnect_delay: 3.0
+schema:
+  rtsp_url: str
+  webhook_url: str
+  width: int(0,1920)
+  process_fps: float(0.1,30.0)
+  min_area: float(1,1000000)
+  threshold: int(0,255)
+  history: int(1,10000)
+  var_threshold: float(0.1,1000.0)
+  warmup: float(0,300.0)
+  cooldown: float(0,300.0)
+  reconnect_delay: float(1,300.0)
